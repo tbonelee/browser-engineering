@@ -2,6 +2,8 @@ import socket
 import ssl
 import sys
 
+connections = {}
+
 
 class URL:
     def __init__(self, url):
@@ -48,36 +50,45 @@ class URL:
         # TODO: base64 handling
         return data
 
+    def get_origin(self):
+        return self.scheme + "://" + self.host + ":" + str(self.port)
+
     def request(self):
         if self.scheme == "file":
             return self._request_file()
         elif self.scheme == "data":
             return self._request_data()
-        s = socket.socket(
-            family=socket.AF_INET,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
-        s.connect((self.host, self.port))
-        if self.scheme == "https":
-            ctx = ssl.create_default_context()
-            s = ctx.wrap_socket(s, server_hostname=self.host)
+        connection_cache = connections.get(self.get_origin())
+        if connection_cache:
+            s = connection_cache
+        else:
+            s = socket.socket(
+                family=socket.AF_INET,
+                type=socket.SOCK_STREAM,
+                proto=socket.IPPROTO_TCP,
+            )
+            s.connect((self.host, self.port))
+            if self.scheme == "https":
+                ctx = ssl.create_default_context()
+                s = ctx.wrap_socket(s, server_hostname=self.host)
+
+        connections[self.get_origin()] = s  # For keep-alive
 
         request = "GET {} HTTP/1.1\r\n".format(self.path)
         request += "Host: {}\r\n".format(self.host)
-        request += "Connection: close\r\n"
+        request += "Connection: Keep-Alive\r\n"
         request += "User-Agent: Python-Browser\r\n"
         request += "\r\n"
         s.send(request.encode("utf8"))
 
-        response = s.makefile("r", encoding="utf8", newline="\r\n")
+        response = s.makefile("rb", newline="\r\n")
 
         statusline = response.readline()
-        version, status, explanation = statusline.split(" ", 2)
+        version, status, explanation = statusline.decode("utf8").split(" ", 2)
 
         response_headers = {}
         while True:
-            line = response.readline()
+            line = response.readline().decode("utf8")
             if line == "\r\n":
                 break
             header, value = line.split(":", 1)
@@ -87,8 +98,8 @@ class URL:
         assert "transfer-encoding" not in response_headers
         assert "content-encoding" not in response_headers
 
-        content = response.read()
-        s.close()
+        content_length = int(response_headers["content-length"])
+        content = response.read(content_length).decode("utf8")
         return content
 
 
