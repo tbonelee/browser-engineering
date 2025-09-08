@@ -98,6 +98,12 @@ class URL:
         assert "transfer-encoding" not in response_headers
         assert "content-encoding" not in response_headers
 
+        if 300 <= int(status) < 400:
+            location = response_headers["location"]
+            if location.startswith("/"):
+                location = self.get_origin() + location
+            return URL(location).request()
+
         content_length = int(response_headers["content-length"])
         content = response.read(content_length).decode("utf8")
         return content
