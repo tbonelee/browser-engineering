@@ -6,7 +6,12 @@ import sys
 class URL:
     def __init__(self, url):
         self.scheme, url = url.split("://", 1)
-        assert self.scheme in ["http", "https"]
+        assert self.scheme in ["http", "https", "file"]
+        if self.scheme == "file":
+            self.host = None
+            self.port = None
+            self.path = url
+            return
         if self.scheme == "http":
             self.port = 80
         elif self.scheme == "https":
@@ -19,7 +24,16 @@ class URL:
             self.port = int(port)
         self.path = "/" + url
 
+    def _request_file(self):
+        assert self.scheme == "file"
+        if not self.path:
+            self.path = "./test.html"  # For development
+        with open(self.path, "r", encoding="utf8") as f:
+            return f.read()
+
     def request(self):
+        if self.scheme == "file":
+            return self._request_file()
         s = socket.socket(
             family=socket.AF_INET,
             type=socket.SOCK_STREAM,
