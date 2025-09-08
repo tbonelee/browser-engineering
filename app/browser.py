@@ -93,13 +93,27 @@ def show(body):
     :return:
     """
     in_tag = False
-    for c in body:
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == "&":
+            candid = body[i + 0 : i + 4]
+            if candid == "&gt;":
+                print(">", end="")
+                i += 4
+                continue
+            elif candid == "&lt;":
+                print("<", end="")
+                i += 4
+                continue
+
         if c == "<":
             in_tag = True
         elif c == ">":
             in_tag = False
         elif not in_tag:
             print(c, end="")
+        i += 1
 
 
 def load(url: URL):
