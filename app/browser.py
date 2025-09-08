@@ -5,6 +5,12 @@ import sys
 
 class URL:
     def __init__(self, url):
+        if url.startswith("view-source:"):
+            url = url[len("view-source:") :]
+            self.view_source = True
+        else:
+            self.view_source = False
+
         if url.startswith("data:"):
             self.scheme, url = url.split(":", 1)
         else:
@@ -86,12 +92,16 @@ class URL:
         return content
 
 
-def show(body):
+def show(body, view_source=False):
     """
     Prints the body without tags
     :param body:
     :return:
     """
+    if view_source:
+        print(body)
+        return
+
     in_tag = False
     i = 0
     while i < len(body):
@@ -118,7 +128,7 @@ def show(body):
 
 def load(url: URL):
     body = url.request()
-    show(body)
+    show(body, url.view_source)
 
 
 if __name__ == "__main__":
