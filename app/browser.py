@@ -1,8 +1,49 @@
 import socket
 import ssl
 import sys
+import time
 
 connections = {}
+
+# Simple in-memory caches
+# Key is full URL (origin + path)
+_response_cache = {}  # key -> {"expires_at": float|None, "body": str}
+_redirect_cache = {}  # key -> {"expires_at": float|None, "location": str}
+
+
+def _cache_is_valid(entry):
+    if not entry:
+        return False
+    expires_at = entry.get("expires_at")
+    if expires_at is None:
+        return True
+    return time.time() <= expires_at
+
+
+def _parse_cache_control(header_value):
+    """Parse Cache-Control and decide cacheability and max-age.
+
+    Returns (cacheable: bool, max_age_seconds: int|None).
+    Only supports 'no-store' and 'max-age'. Any other directive disables caching.
+    """
+    if not header_value:
+        return True, None
+
+    tokens = [t.strip() for t in header_value.split(",") if t.strip()]
+    max_age = None
+    for token in tokens:
+        token_l = token.casefold()
+        if token_l == "no-store":
+            return False, None
+        elif token_l.startswith("max-age="):
+            try:
+                max_age = int(token_l.split("=", 1)[1])
+            except Exception:
+                return False, None
+        else:
+            # Unknown directive → do not cache
+            return False, None
+    return True, max_age
 
 
 class URL:
@@ -58,6 +99,18 @@ class URL:
             return self._request_file()
         elif self.scheme == "data":
             return self._request_data()
+        # Build cache key
+        cache_key = self.get_origin() + self.path
+
+        # Check redirect cache first
+        redirect_entry = _redirect_cache.get(cache_key)
+        if _cache_is_valid(redirect_entry):
+            return URL(redirect_entry["location"]).request()
+
+        # Check response cache
+        response_entry = _response_cache.get(cache_key)
+        if _cache_is_valid(response_entry):
+            return response_entry["body"]
         connection_cache = connections.get(self.get_origin())
         if connection_cache:
             s = connection_cache
@@ -85,6 +138,7 @@ class URL:
 
         statusline = response.readline()
         version, status, explanation = statusline.decode("utf8").split(" ", 2)
+        status_code = int(status)
 
         response_headers = {}
         while True:
@@ -98,14 +152,32 @@ class URL:
         assert "transfer-encoding" not in response_headers
         assert "content-encoding" not in response_headers
 
-        if 300 <= int(status) < 400:
+        if 300 <= status_code < 400:
             location = response_headers["location"]
             if location.startswith("/"):
                 location = self.get_origin() + location
+
+            # Cache permanent redirect (301) if allowed
+            if status_code == 301:
+                cache_control = response_headers.get("cache-control")
+                cacheable, max_age = _parse_cache_control(cache_control)
+                if cacheable:
+                    expires_at = time.time() + max_age if max_age is not None else None
+                    _redirect_cache[cache_key] = {"expires_at": expires_at, "location": location}
+
             return URL(location).request()
 
         content_length = int(response_headers["content-length"])
         content = response.read(content_length).decode("utf8")
+
+        # Cache 200 and 404 responses if allowed by Cache-Control
+        if status_code in (200, 404):
+            cache_control = response_headers.get("cache-control")
+            cacheable, max_age = _parse_cache_control(cache_control)
+            if cacheable:
+                expires_at = time.time() + max_age if max_age is not None else None
+                _response_cache[cache_key] = {"expires_at": expires_at, "body": content}
+
         return content
 
 
