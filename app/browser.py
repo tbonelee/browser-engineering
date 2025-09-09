@@ -2,6 +2,7 @@ import socket
 import ssl
 import sys
 import time
+import gzip
 
 connections = {}
 
@@ -131,6 +132,7 @@ class URL:
         request += "Host: {}\r\n".format(self.host)
         request += "Connection: Keep-Alive\r\n"
         request += "User-Agent: Python-Browser\r\n"
+        request += "Accept-Encoding: gzip\r\n"
         request += "\r\n"
         s.send(request.encode("utf8"))
 
@@ -148,9 +150,30 @@ class URL:
             header, value = line.split(":", 1)
             response_headers[header.casefold()] = value.strip()
 
-        # 다음 두 헤더는 일단 허용하지 않도록
-        assert "transfer-encoding" not in response_headers
-        assert "content-encoding" not in response_headers
+        # Helpers
+        def _read_chunked_body(fobj):
+            body_bytes = b""
+            while True:
+                size_line = fobj.readline().decode("utf8")
+                # Handle optional chunk extensions after ';'
+                size_token = size_line.split(";", 1)[0].strip()
+                if not size_token:
+                    continue
+                size = int(size_token, 16)
+                if size == 0:
+                    # Consume optional trailer headers until blank line or EOF
+                    while True:
+                        trailer_line = fobj.readline().decode("utf8")
+                        if not trailer_line:  # EOF guard
+                            break
+                        if trailer_line == "\r\n":
+                            break
+                    break
+                chunk = fobj.read(size)
+                body_bytes += chunk
+                # Consume trailing CRLF after each chunk
+                _ = fobj.read(2)
+            return body_bytes
 
         if 300 <= status_code < 400:
             location = response_headers["location"]
@@ -163,12 +186,40 @@ class URL:
                 cacheable, max_age = _parse_cache_control(cache_control)
                 if cacheable:
                     expires_at = time.time() + max_age if max_age is not None else None
-                    _redirect_cache[cache_key] = {"expires_at": expires_at, "location": location}
+                    _redirect_cache[cache_key] = {
+                        "expires_at": expires_at,
+                        "location": location,
+                    }
 
             return URL(location).request()
 
-        content_length = int(response_headers["content-length"])
-        content = response.read(content_length).decode("utf8")
+        # Read body according to Transfer-Encoding / Content-Length
+        transfer_encoding = response_headers.get("transfer-encoding")
+        if transfer_encoding:
+            encodings = [
+                e.strip().casefold() for e in transfer_encoding.split(",") if e.strip()
+            ]
+            assert all(
+                c == "chunked" for c in encodings
+            ), f"Unsupported Transfer-Encoding: {transfer_encoding}"
+            body_bytes = _read_chunked_body(response)
+        else:
+            # No transfer-encoding; rely on Content-Length
+            content_length = int(response_headers["content-length"])
+            body_bytes = response.read(content_length)
+
+        # Apply content-encoding (only gzip supported)
+        content_encoding = response_headers.get("content-encoding", "").casefold()
+        if content_encoding:
+            encodings = [e.strip() for e in content_encoding.split(",") if e.strip()]
+            assert all(
+                c == "gzip" for c in encodings
+            ), f"Unsupported Content-Encoding: {content_encoding}"
+            for _ in encodings:
+                body_bytes = gzip.decompress(body_bytes)
+
+        # Decode to text for display/caching
+        content = body_bytes.decode("utf8", errors="replace")
 
         # Cache 200 and 404 responses if allowed by Cache-Control
         if status_code in (200, 404):
@@ -221,4 +272,5 @@ def load(url: URL):
 
 
 if __name__ == "__main__":
-    load(URL(sys.argv[1]))
+    # load(URL(sys.argv[1]))
+    load(URL("http://browser.engineering/redirect3"))
